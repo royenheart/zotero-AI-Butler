@@ -92,6 +92,8 @@ export interface TaskItem {
   targetedAppendedTableEntries?: string[];
   /** 多论文总结任务参数 */
   multiPaperItemIds?: number[];
+  /** 多论文总结生成的笔记条目 ID，用于详情跳转 */
+  resultNoteId?: number;
 }
 
 /**
@@ -1096,7 +1098,7 @@ export class TaskQueueManager {
       this.notifyProgress(taskId, 10, task.workflowStage);
 
       // 调用 NoteGenerator 生成多论文总结
-      await NoteGenerator.generateMultiPaperSummary(
+      const multiResult = await NoteGenerator.generateMultiPaperSummary(
         items,
         (message: string, progress: number) => {
           task.progress = progress;
@@ -1118,6 +1120,7 @@ export class TaskQueueManager {
         },
       );
 
+      task.resultNoteId = multiResult.note.id;
       task.status = TaskStatus.COMPLETED;
       task.progress = 100;
       task.workflowStage = "完成";
