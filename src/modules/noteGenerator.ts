@@ -589,9 +589,29 @@ export class NoteGenerator {
         `AI 多论文总结 (${items.length} 篇)`,
       );
 
-      // 笔记保存到第一篇文献下
-      const note = await this.createNote(items[0], noteContent);
+      // 创建独立笔记（与选中文献并列，不附属于任何文献）
+      const note = new Zotero.Item("note");
+      note.libraryID = items[0].libraryID;
+      note.setNote(noteContent);
+      note.addTag("AI-Generated");
       await note.saveTx();
+
+      // 将笔记添加到第一篇文献所在的分类，使其与论文并列显示
+      try {
+        const collectionIDs: number[] =
+          (items[0] as any).getCollections?.() || [];
+        if (collectionIDs.length > 0) {
+          const collection = Zotero.Collections.get(collectionIDs[0]);
+          if (collection) {
+            await collection.addItem(note.id);
+          }
+        }
+      } catch (e) {
+        ztoolkit.log(
+          `[AI Butler] 添加笔记(id=${note.id})到分类失败:`,
+          e,
+        );
+      }
 
       progressCallback?.("完成！", 100);
 
