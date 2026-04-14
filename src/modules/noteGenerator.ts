@@ -607,10 +607,7 @@ export class NoteGenerator {
           }
         }
       } catch (e) {
-        ztoolkit.log(
-          `[AI Butler] 添加笔记(id=${note.id})到分类失败:`,
-          e,
-        );
+        ztoolkit.log(`[AI Butler] 添加笔记(id=${note.id})到分类失败:`, e);
       }
 
       progressCallback?.("完成！", 100);
