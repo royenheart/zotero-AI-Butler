@@ -15,7 +15,9 @@ import {
   type LLMEndpoint,
   type LLMPdfProcessMode,
 } from "./llmEndpointManager";
+import { ContentExtractor } from "./contentExtractor";
 import { PDFExtractor } from "./pdfExtractor";
+import { SnapshotExtractor } from "./snapshotExtractor";
 import { ProviderRegistry } from "./llmproviders/ProviderRegistry";
 import "./llmproviders";
 import type { ILlmProvider, PdfFileInfo } from "./llmproviders/ILlmProvider";
@@ -73,6 +75,13 @@ export type LLMPdfAttachmentContent = {
   policy?: LLMContentPolicy;
 };
 
+export type LLMAnalyzableAttachmentContent = {
+  kind: "analyzable-attachment";
+  item?: Zotero.Item;
+  attachment: Zotero.Item;
+  policy?: LLMContentPolicy;
+};
+
 export type LLMPdfFileInput = PdfFileInfo & {
   textContent?: string;
 };
@@ -95,6 +104,7 @@ export type LLMContentInput =
   | LLMTextContent
   | LLMZoteroItemContent
   | LLMPdfAttachmentContent
+  | LLMAnalyzableAttachmentContent
   | LLMPdfFilesContent
   | LLMLegacyContent;
 
@@ -885,6 +895,10 @@ export class LLMService {
       return this.resolvePdfAttachmentContent(input, policy, warnings);
     }
 
+    if (input.kind === "analyzable-attachment") {
+      return this.resolveAnalyzableAttachmentContent(input, policy, warnings);
+    }
+
     return this.resolvePdfFilesContent(
       provider,
       input,
@@ -929,8 +943,23 @@ export class LLMService {
       (getPref("pdfAttachmentMode") as string) ||
       "default";
     const maxAttachments = Math.max(input.maxAttachments || Infinity, 1);
+    const hasPdf = await PDFExtractor.hasPDFAttachment(input.item);
+    const hasTextContentSource = !hasPdf
+      ? await SnapshotExtractor.hasWebSnapshotAttachment(input.item)
+      : false;
+    const shouldUseTextContentSource = !hasPdf && hasTextContentSource;
+    const effectivePolicy =
+      shouldUseTextContentSource && policy !== "text" ? "text" : policy;
 
-    if (allowMultiFile && policy === "pdf-base64" && attachmentMode === "all") {
+    if (shouldUseTextContentSource) {
+      warnings.push("已使用网页快照文本作为本次分析内容。");
+    }
+
+    if (
+      allowMultiFile &&
+      effectivePolicy === "pdf-base64" &&
+      attachmentMode === "all"
+    ) {
       const allPdfs = await PDFExtractor.getAllPdfAttachments(input.item);
       if (allPdfs.length > 1) {
         if (
@@ -961,12 +990,12 @@ export class LLMService {
       }
     }
 
-    if (policy === "pdf-base64") {
+    if (effectivePolicy === "pdf-base64") {
       const content = await PDFExtractor.extractBase64FromItem(input.item);
       return { mode: "single", content, isBase64: true, warnings };
     }
 
-    if (attachmentMode === "all") {
+    if (attachmentMode === "all" && hasPdf) {
       const allPdfs = await PDFExtractor.getAllPdfAttachments(input.item);
       const selected = allPdfs.slice(0, maxAttachments);
       const parts = await Promise.all(
@@ -985,7 +1014,10 @@ export class LLMService {
       };
     }
 
-    const text = await PDFExtractor.extractTextFromItem(input.item, policy);
+    const text = await ContentExtractor.extractTextFromItem(
+      input.item,
+      policy === "mineru" ? "mineru" : "text",
+    );
     return {
       mode: "single",
       content: this.normalizeText(text),
@@ -999,17 +1031,42 @@ export class LLMService {
     policy: LLMContentPolicy,
     warnings: string[],
   ): Promise<ResolvedContent> {
-    if (policy === "pdf-base64") {
+    return this.resolveAttachmentContent(input, policy, warnings);
+  }
+
+  private static async resolveAnalyzableAttachmentContent(
+    input: LLMAnalyzableAttachmentContent,
+    policy: LLMContentPolicy,
+    warnings: string[],
+  ): Promise<ResolvedContent> {
+    return this.resolveAttachmentContent(input, policy, warnings);
+  }
+
+  private static async resolveAttachmentContent(
+    input: Pick<LLMPdfAttachmentContent, "item" | "attachment">,
+    policy: LLMContentPolicy,
+    warnings: string[],
+  ): Promise<ResolvedContent> {
+    const isPdf = PDFExtractor.isPdfAttachment(input.attachment);
+
+    if (policy === "pdf-base64" && isPdf) {
       const content = await PDFExtractor.extractBase64FromAttachment(
         input.attachment,
       );
       return { mode: "single", content, isBase64: true, warnings };
     }
 
-    const text =
-      policy === "mineru" && input.item
+    if (policy === "pdf-base64" && !isPdf) {
+      warnings.push("当前附件将按文本内容进行分析。");
+    }
+
+    const text = isPdf
+      ? policy === "mineru" && input.item
         ? await PDFExtractor.extractTextFromItem(input.item, "mineru")
-        : await PDFExtractor.extractTextFromAttachment(input.attachment);
+        : await PDFExtractor.extractTextFromAttachment(input.attachment)
+      : await ContentExtractor.extractTextFromAnalyzableAttachment(
+          input.attachment,
+        );
     return {
       mode: "single",
       content: this.normalizeText(text),
